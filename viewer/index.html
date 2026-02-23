@@ -111,6 +111,7 @@ code{font-family:var(--mono);font-size:.9em;background:var(--code);padding:1px 5
 .badges{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px}
 .badge{display:inline-block;padding:1px 6px;font-size:.7rem;font-family:var(--mono);background:var(--badge);color:var(--badge-t);border-radius:3px}
 .badge-net{background:#1f6feb22;color:#58a6ff}
+.badge-xmod{background:#da363322;color:#f85149;font-size:0.7em;vertical-align:middle}
 
 /* Sections */
 .sec-hdr{display:flex;align-items:center;justify-content:space-between;margin:20px 0 8px;padding-bottom:4px;border-bottom:1px solid var(--brd-l)}
@@ -326,6 +327,13 @@ function mkClassLink(name, mod) {
   return a;
 }
 
+function resolveClassMod(name, preferMod) {
+  var e = classMap.get(name);
+  if(!e) return null;
+  if(preferMod && e.mods && e.mods.indexOf(preferMod)>=0) return preferMod;
+  return e.m;
+}
+
 function nav(type, mod, name) {
   if(type==='class') location.hash='class/'+encodeURIComponent(mod)+'/'+encodeURIComponent(name);
   else if(type==='enum') location.hash='enum/'+encodeURIComponent(mod)+'/'+encodeURIComponent(name);
@@ -447,7 +455,8 @@ function onDataReady(raw) {
     var cls = mod.classes || [];
     for(var j=0; j<cls.length; j++) {
       var c = cls[j];
-      if(!classMap.has(c.name)) classMap.set(c.name, {m:mn, o:c});
+      if(!classMap.has(c.name)) classMap.set(c.name, {m:mn, o:c, mods:[mn]});
+      else { var ex=classMap.get(c.name); if(ex.mods.indexOf(mn)<0) ex.mods.push(mn); }
       allClasses.push({n:c.name, m:mn});
       searchEntries.push([c.name, 'c', mn, null]);
 
@@ -796,7 +805,7 @@ function renderContent() {
 
   if(activeItem.type==='class') {
     var e = classMap.get(activeItem.name);
-    if(e) renderClass(e.o, e.m);
+    if(e) renderClass(e.o, activeItem.module||e.m);
     else $content.innerHTML='<div class="empty">Class "'+esc(activeItem.name)+'" not found</div>';
   } else if(activeItem.type==='enum') {
     var e = enumMap.get(activeItem.name);
@@ -829,16 +838,16 @@ function renderClass(cls, mod) {
     chain.appendChild(el('span','cm-label','Inherits: '));
     for(var i=0;i<cls.inheritance.length;i++) {
       if(i>0) chain.appendChild(el('span','cls-sep',' \u203A '));
-      var cn = cls.inheritance[i], ce = classMap.get(cn);
-      if(ce && cn!==cls.name) chain.appendChild(mkClassLink(cn, ce.m));
+      var cn = cls.inheritance[i], cnMod = resolveClassMod(cn, mod);
+      if(cnMod && cn!==cls.name) chain.appendChild(mkClassLink(cn, cnMod));
       else chain.appendChild(el('span', i===0?'f-type':'', cn));
     }
     hdr.appendChild(chain);
   } else if(cls.parent) {
     var chain = el('div','cls-chain');
     chain.appendChild(el('span','cm-label','Parent: '));
-    var pe = classMap.get(cls.parent);
-    if(pe) chain.appendChild(mkClassLink(cls.parent, pe.m));
+    var peMod = resolveClassMod(cls.parent, mod);
+    if(peMod) chain.appendChild(mkClassLink(cls.parent, peMod));
     else chain.appendChild(el('span','',cls.parent));
     hdr.appendChild(chain);
   }
@@ -865,8 +874,8 @@ function renderClass(cls, mod) {
     cls.components.forEach(function(comp){
       var tr=el('tr');
       tr.appendChild(el('td','f-off',h(comp.offset)));
-      var td=el('td','f-name'), ce=classMap.get(comp.name);
-      if(ce) td.appendChild(mkClassLink(comp.name,ce.m)); else td.textContent=comp.name;
+      var td=el('td','f-name'), compMod=resolveClassMod(comp.name,mod);
+      if(compMod) td.appendChild(mkClassLink(comp.name,compMod)); else td.textContent=comp.name;
       tr.appendChild(td); tb.appendChild(tr);
     });
     t.appendChild(tb); tw.appendChild(t); sec.appendChild(tw); $content.appendChild(sec);
@@ -894,7 +903,7 @@ function renderClass(cls, mod) {
       cnt.textContent = f.length+' fields';
       if(tog) tog.textContent = showFlat?'Show own only':'Show flattened';
       var old = sec.querySelector('.tw'); if(old) old.remove();
-      sec.appendChild(mkFieldTable(f, showFlat));
+      sec.appendChild(mkFieldTable(f, showFlat, mod));
     }
     var tog = flat.length>own.length ? sh.querySelector('.sec-toggle') : null;
     renderFields();
@@ -904,13 +913,13 @@ function renderClass(cls, mod) {
   // Static fields
   if(cls.static_fields && cls.static_fields.length) {
     var sec = mkSec('Static Fields', cls.static_fields.length);
-    sec.appendChild(mkFieldTable(cls.static_fields.map(function(f){return Object.assign({},f,{definedIn:cls.name});}), false));
+    sec.appendChild(mkFieldTable(cls.static_fields.map(function(f){return Object.assign({},f,{definedIn:cls.name});}), false, mod));
     $content.appendChild(sec);
   }
 }
 
 var sortCol='offset', sortDir='asc';
-function mkFieldTable(fields, showDef) {
+function mkFieldTable(fields, showDef, preferMod) {
   var tw=el('div','tw'), t=el('table','ft'), th=el('thead'), hr=el('tr');
   var cols=['offset','name','type','size'];
   if(showDef) cols.push('definedIn');
@@ -947,8 +956,10 @@ function mkFieldTable(fields, showDef) {
 
     var tdT=el('td','f-type');
     var tn=extractType(f.type);
-    if(tn && classMap.has(tn)) {
-      tdT.appendChild(mkClassLink(tn,classMap.get(tn).m));
+    var tnMod=tn?resolveClassMod(tn,preferMod):null;
+    if(tn && tnMod) {
+      tdT.appendChild(mkClassLink(tn,tnMod));
+      if(preferMod && tnMod!==preferMod) { var xb=el('span','badge badge-xmod',tnMod); xb.title='Type registered in '+tnMod+' (canonical server name)'; tdT.appendChild(document.createTextNode(' ')); tdT.appendChild(xb); }
       var rest=(f.type||'').replace(tn,'').trim();
       if(rest) tdT.appendChild(document.createTextNode(' '+rest));
     } else { tdT.textContent=f.type||'\u2014'; }
@@ -959,8 +970,8 @@ function mkFieldTable(fields, showDef) {
     if(showDef) {
       var tdD=el('td','f-def');
       if(f.definedIn) {
-        var de=classMap.get(f.definedIn);
-        if(de) tdD.appendChild(mkClassLink(f.definedIn,de.m)); else tdD.textContent=f.definedIn;
+        var deMod=resolveClassMod(f.definedIn,preferMod);
+        if(deMod) tdD.appendChild(mkClassLink(f.definedIn,deMod)); else tdD.textContent=f.definedIn;
       }
       tr.appendChild(tdD);
     }
