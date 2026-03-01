@@ -21,10 +21,8 @@
 #include <mutex>
 #include <thread>
 #include <optional>
-#include <sstream>
 #include <regex>
 #include <cctype>
-#include <functional>
 
 using json = nlohmann::json;
 
@@ -42,41 +40,34 @@ struct ContainerEntry {
 };
 
 // Rich types: schema type -> {cpp_type, size}
-static const std::unordered_map<std::string, TypeEntry>& rich_types() {
-    static const std::unordered_map<std::string, TypeEntry> tbl = {
-        {"Vector",    {"Vec3",   12}},
-        {"VectorWS",  {"Vec3",   12}},
-        {"QAngle",    {"QAngle", 12}},
-        {"Color",     {"Color",   4}},
-        {"Vector2D",  {"Vec2",    8}},
-        {"Vector4D",  {"Vec4",   16}},
-    };
-    return tbl;
-}
+static const std::unordered_map<std::string, TypeEntry> RICH_TYPES = {
+    {"Vector",    {"Vec3",   12}},
+    {"VectorWS",  {"Vec3",   12}},
+    {"QAngle",    {"QAngle", 12}},
+    {"Color",     {"Color",   4}},
+    {"Vector2D",  {"Vec2",    8}},
+    {"Vector4D",  {"Vec4",   16}},
+};
 
 // Primitive types: schema type -> {cpp_type, size}
-static const std::unordered_map<std::string, TypeEntry>& primitive_map() {
-    static const std::unordered_map<std::string, TypeEntry> tbl = {
-        {"bool",    {"bool",     1}},
-        {"int8",    {"int8_t",   1}},
-        {"uint8",   {"uint8_t",  1}},
-        {"int16",   {"int16_t",  2}},
-        {"uint16",  {"uint16_t", 2}},
-        {"int32",   {"int32_t",  4}},
-        {"uint32",  {"uint32_t", 4}},
-        {"int64",   {"int64_t",  8}},
-        {"uint64",  {"uint64_t", 8}},
-        {"float32", {"float",    4}},
-        {"float",   {"float",    4}},
-        {"float64", {"double",   8}},
-    };
-    return tbl;
-}
+static const std::unordered_map<std::string, TypeEntry> PRIMITIVE_MAP = {
+    {"bool",    {"bool",     1}},
+    {"int8",    {"int8_t",   1}},
+    {"uint8",   {"uint8_t",  1}},
+    {"int16",   {"int16_t",  2}},
+    {"uint16",  {"uint16_t", 2}},
+    {"int32",   {"int32_t",  4}},
+    {"uint32",  {"uint32_t", 4}},
+    {"int64",   {"int64_t",  8}},
+    {"uint64",  {"uint64_t", 8}},
+    {"float32", {"float",    4}},
+    {"float",   {"float",    4}},
+    {"float64", {"double",   8}},
+};
 
 // Alias table: schema type -> {cpp_type (empty = blob), size}
 // ALL ~180 entries from the Python source
-static const std::unordered_map<std::string, TypeEntry>& alias_table() {
-    static const std::unordered_map<std::string, TypeEntry> tbl = {
+static const std::unordered_map<std::string, TypeEntry> ALIAS_TABLE = {
         // String / symbol types (opaque blobs)
         {"CUtlString",                  {"void*",    8}},
         {"CUtlSymbolLarge",             {"void*",    8}},
@@ -232,13 +223,10 @@ static const std::unordered_map<std::string, TypeEntry>& alias_table() {
         {"AnimParamButton_t",                    {"int32_t", 4}},
         {"AnimParamNetworkSetting",              {"int32_t", 4}},
         {"CGroundIKSolverSettings",              {"",       48}},
-    };
-    return tbl;
-}
+};
 
 // Container sizes: outer template name -> fixed size (nullopt = use field's size)
-static const std::unordered_map<std::string, ContainerEntry>& container_sizes() {
-    static const std::unordered_map<std::string, ContainerEntry> tbl = {
+static const std::unordered_map<std::string, ContainerEntry> CONTAINER_SIZES = {
         {"CUtlVector",                          {24}},
         {"CNetworkUtlVectorBase",               {24}},
         {"C_NetworkUtlVectorBase",              {24}},
@@ -271,9 +259,7 @@ static const std::unordered_map<std::string, ContainerEntry>& container_sizes() 
         {"CModifierHandleTyped",                {std::nullopt}},
         {"CSubclassName",                       {std::nullopt}},
         {"CSubclassNameBase",                   {16}},
-    };
-    return tbl;
-}
+};
 
 // ============================================================================
 // Resolution statistics tracker (thread-safe)
@@ -427,24 +413,24 @@ static std::pair<std::string, std::string> schema_to_cpp_type(
 {
     // 1. Rich types (Vector -> Vec3, QAngle -> QAngle, etc.)
     {
-        auto it = rich_types().find(schema_type);
-        if (it != rich_types().end()) {
+        auto it = RICH_TYPES.find(schema_type);
+        if (it != RICH_TYPES.end()) {
             return {it->second.cpp_type, "rich_type"};
         }
     }
 
     // 2. Primitives
     {
-        auto it = primitive_map().find(schema_type);
-        if (it != primitive_map().end()) {
+        auto it = PRIMITIVE_MAP.find(schema_type);
+        if (it != PRIMITIVE_MAP.end()) {
             return {it->second.cpp_type, "primitive"};
         }
     }
 
     // 3. Alias table
     {
-        auto it = alias_table().find(schema_type);
-        if (it != alias_table().end()) {
+        auto it = ALIAS_TABLE.find(schema_type);
+        if (it != ALIAS_TABLE.end()) {
             return {it->second.cpp_type, "alias"};
         }
     }
@@ -483,18 +469,18 @@ static std::pair<std::string, std::string> schema_to_cpp_type(
             std::string count = m[2].str();
 
             // Rich type arrays
-            auto rit = rich_types().find(base_type);
-            if (rit != rich_types().end()) {
+            auto rit = RICH_TYPES.find(base_type);
+            if (rit != RICH_TYPES.end()) {
                 return {rit->second.cpp_type + "[" + count + "]", "array"};
             }
 
-            auto pit = primitive_map().find(base_type);
-            if (pit != primitive_map().end()) {
+            auto pit = PRIMITIVE_MAP.find(base_type);
+            if (pit != PRIMITIVE_MAP.end()) {
                 return {pit->second.cpp_type + "[" + count + "]", "array"};
             }
 
-            auto ait = alias_table().find(base_type);
-            if (ait != alias_table().end()) {
+            auto ait = ALIAS_TABLE.find(base_type);
+            if (ait != ALIAS_TABLE.end()) {
                 const std::string& alias_cpp = ait->second.cpp_type;
                 if (!alias_cpp.empty()) {
                     size_t bracket = alias_cpp.find('[');
@@ -539,7 +525,7 @@ static std::pair<std::string, std::string> schema_to_cpp_type(
                 }
             }
 
-            if (container_sizes().count(outer)) {
+            if (CONTAINER_SIZES.count(outer)) {
                 return {"", "template"};
             }
 
@@ -656,13 +642,6 @@ static std::string sanitize_cpp_identifier(const std::string& name) {
 // ============================================================================
 
 static bool is_entity_class(const std::string& cls_name,
-                             const std::unordered_map<std::string, const ClassInfo*>& lookup);
-
-// Forward-declare ClassInfo members we need
-// (these are defined in main.cpp, we access them via the pointer)
-// struct ClassInfo has: name, size, parent, fields, metadata, etc.
-
-static bool is_entity_class(const std::string& cls_name,
                              const std::unordered_map<std::string, const ClassInfo*>& lookup) {
     std::string current = cls_name;
     std::unordered_set<std::string> seen;
@@ -682,13 +661,13 @@ static bool needs_types_include(const std::vector<Field>& fields) {
     for (const auto& f : fields) {
         const std::string& st = f.type;
 
-        if (rich_types().count(st)) return true;
+        if (RICH_TYPES.count(st)) return true;
 
         // Check array of rich types
         static const std::regex rx_arr(R"(([\w:]+)\[(\d+)\])");
         std::smatch m;
         if (std::regex_match(st, m, rx_arr)) {
-            if (rich_types().count(m[1].str())) return true;
+            if (RICH_TYPES.count(m[1].str())) return true;
         }
 
         // CHandle fields
