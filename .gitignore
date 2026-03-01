@@ -17,8 +17,8 @@ generated/
 *.opensdf
 .vs/
 
-# Python
-__pycache__/
+# Debug artifacts
+_debug_entities*.js
 
 # CMake
 build/
