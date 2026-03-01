@@ -2,6 +2,7 @@
 
 #include "global-scanner.hpp"
 #include "schema-manager.hpp"
+#include "safe-memory.hpp"
 #include "log.hpp"
 
 #include <Windows.h>
@@ -9,19 +10,6 @@
 #include <unordered_set>
 
 namespace globals {
-
-// ============================================================================
-// Safe memory read (SEH protected — we're dereferencing arbitrary .data values)
-// ============================================================================
-
-static bool safe_read_u64(uintptr_t addr, uint64_t& out) {
-    __try {
-        out = *reinterpret_cast<const uint64_t*>(addr);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
 
 // ============================================================================
 // PE section walking

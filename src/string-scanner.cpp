@@ -10,6 +10,7 @@
 #define LOG_TAG "string-scanner"
 
 #include "string-scanner.hpp"
+#include "safe-memory.hpp"
 #include "log.hpp"
 
 #include <Windows.h>
@@ -18,19 +19,6 @@
 #include <algorithm>
 
 namespace strings {
-
-// ============================================================================
-// SEH-safe memory reads
-// ============================================================================
-
-static bool safe_read_bytes(const void* src, void* dst, size_t len) {
-    __try {
-        memcpy(dst, src, len);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
 
 // ============================================================================
 // PE section discovery
