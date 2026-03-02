@@ -155,6 +155,77 @@ auto addr = resolve_rip(match, patterns::client::dwEntityList::rip_offset);
 ### Supplementary pattern scanning
 Optional `patterns.json` for untyped globals that vtable scanning can't find (`dwViewMatrix`, `dwEntityList`, etc.).
 
+## Customizing SDK Output with `sdk-cherry-pick.json`
+
+When generating SDK headers with `--sdk` or `--all`, dezlock-dump loads `sdk-cherry-pick.json` from the same directory as the exe. This injects custom C++ helper methods into any generated struct — without touching the tool source or the raw dump output.
+
+### Why it exists
+
+The schema dump captures raw field offsets but can't know that `m_lifeState == 0 && m_iHealth > 0` means a player is alive, or that you always want `m_iszPlayerName` surfaced as a named accessor. Cherry-pick lets you bake those idioms directly into the generated headers so every dump you produce is immediately usable.
+
+### File format
+
+```json
+{
+  "helpers": {
+    "ClassName": {
+      "methods": [
+        "bool is_alive() const { return m_lifeState == 0 && m_iHealth > 0; }",
+        "int health() const { return m_iHealth; }"
+      ]
+    }
+  }
+}
+```
+
+| Key | Description |
+|-----|-------------|
+| `helpers` | Top-level key, required |
+| `ClassName` | Exact schema class name (case-sensitive) |
+| `methods` | Array of raw C++ method strings, injected verbatim into the struct body |
+
+Methods run inside the generated struct, so `this` refers to the class instance and all schema field names are directly accessible by name.
+
+### What the output looks like
+
+Given a cherry-pick entry for `C_BaseEntity`, the generated `sdk/client/C_BaseEntity.hpp` becomes:
+
+```cpp
+struct C_BaseEntity {
+    // ... schema fields with constexpr offsets and static_asserts ...
+    uint8_t  m_lifeState;   // offset 0x338
+    int32_t  m_iHealth;     // offset 0x354
+    int32_t  m_iMaxHealth;  // offset 0x358
+    uint8_t  m_iTeamNum;    // offset 0x3BF
+
+    // --- Helper methods (from sdk-cherry-pick.json) ---
+    bool is_alive() const { return m_lifeState == 0 && m_iHealth > 0; }
+    int team() const { return static_cast<int>(m_iTeamNum); }
+    int health() const { return m_iHealth; }
+    float health_pct() const { return m_iMaxHealth > 0 ? (float)m_iHealth / m_iMaxHealth : 0.f; }
+};
+```
+
+### Tips
+
+- **Field names must match the schema exactly.** Run a dump first and grep `<module>.txt` for the field name and spelling you want before writing a helper.
+- **Methods are injected verbatim** — no validation is done. A typo or a reference to a non-existent field will produce a header that fails to compile.
+- **Both `C_` and non-`C_` variants often coexist.** In CS2, `C_BaseEntity` (client-side) and `CBaseEntity` (shared/server) are separate schema entries. Add helpers to whichever class your project targets, or both.
+- **Place the file next to `dezlock-dump.exe`**, not in the output directory. The tool looks for `sdk-cherry-pick.json` in the same directory as the exe.
+- **Changes take effect on the next dump.** Re-run with `--sdk` or `--all` and the new methods appear in every affected header.
+
+### Default helpers
+
+The bundled `sdk-cherry-pick.json` ships with helpers for the most commonly accessed classes:
+
+| Class | Helper methods |
+|-------|----------------|
+| `C_BaseEntity` | `is_alive()`, `team()`, `health()`, `max_health()`, `health_pct()` |
+| `CBasePlayerController` | `player_name()`, `steam_id()` |
+| `CGameSceneNode` | `is_dormant()` |
+
+Add your own entries for game-specific classes (`CCitadelPlayerPawn`, `C_CSPlayerPawn`, etc.) and they'll appear in every future dump automatically.
+
 ## Output Files
 
 | File | Description |
