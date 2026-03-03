@@ -1,7 +1,7 @@
 import { useState, useMemo, useRef, useCallback } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useSchema } from '../../context/schema-context'
-import { h, extractType, liveEditorType } from '../../lib/format'
+import { h, liveEditorType, resolveFieldType } from '../../lib/format'
 import { ClassLink } from './class-link'
 import { CopyFieldButton } from './copy-field-button'
 import { InlineClassExpander } from './inline-class-expander'
@@ -96,10 +96,11 @@ export function FieldTable({ fields, showDefinedIn, preferModule, showLiveValues
         <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
           {virtualizer.getVirtualItems().map((vRow) => {
             const f = sorted[vRow.index]
-            const typeName = extractType(f.type)
-            const typeMod = typeName ? resolveClassMod(typeName, preferModule) : null
+            const resolved = resolveFieldType(f.type, resolveClassMod, preferModule)
+            const typeName = resolved?.typeName ?? null
+            const typeMod = resolved?.typeMod ?? null
             const edType = liveEditorType(f.type, enumMap as Map<string, unknown>, classMap as Map<string, unknown>)
-            const canExpand = !!typeName && !!typeMod
+            const canExpand = !!resolved
             const isExpanded = expandedRows.has(vRow.index)
             const copyLine = `[${preferModule || ''}]+${h(f.offset)} ${f.name}`
 

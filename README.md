@@ -15,6 +15,8 @@ Runtime schema + RTTI extraction tool for Source 2 games (Deadlock, CS2, Dota 2)
 
 ## What's New
 
+**Polymorphic pointer resolution** — The live bridge now resolves runtime types via RTTI when dereferencing pointer fields. A field declared as `CEntitySubclassVDataBase*` will now show the full derived type (e.g. `CitadelAbilityVData` with 100+ fields) instead of just the base class. Works for all polymorphic pointers — VData, entity pointers, modifiers, etc. The viewer shows the resolved type as a badge with the declared type dimmed beside it.
+
 **Viewer rewrite** — The interactive viewer has been rebuilt from scratch with React 19 + TypeScript + Vite + Tailwind CSS v4. The 3,453-line monolithic HTML file is now 67 typed source files with virtualized lists, proper state management, and zero XSS vulnerabilities. All existing features preserved — same hash routing, same live entity inspector.
 
 **v1.6.0** — Protobuf descriptor scanner. Decodes embedded `.proto` definitions from game binaries — extracts named fields, types, and message hierarchies for protobuf-only classes like `CBaseUserCmdPB` that have no Source 2 schema registration.
@@ -211,6 +213,8 @@ Then open `viewer/dist/index.html` in any browser, or use `pnpm dev` during deve
 - Dark/light theme toggle (persisted)
 - Virtualized sidebar for smooth scrolling with 5,000+ items
 - Works offline with 150MB+ JSON files (parses in a Web Worker)
+
+> **Note:** When both `client.dll` and `server.dll` are present (common in Deadlock/CS2), the exported `_all-modules.json` can reach **500MB+** since many classes are duplicated across both modules. The viewer handles this fine but loading may take a moment. `server.dll` is excluded from the module filter by default — enable it manually if you need server-side class data.
 
 ### Live Server
 

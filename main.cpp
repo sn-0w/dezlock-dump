@@ -36,6 +36,8 @@
 #include "src/analyze-members.hpp"
 #include "src/ws-server.hpp"
 #include "src/live-bridge.hpp"
+#include "src/version-check.hpp"
+#include "version.h"
 using json = nlohmann::json;
 namespace fs = std::filesystem;
 
@@ -186,6 +188,22 @@ int main(int argc, char* argv[]) {
     // Banner
     SetConsoleTitleA("dezlock-dump - Source 2 Schema Extractor");
     print_banner();
+
+    // Version check (non-blocking, silent on failure)
+    if (!opts.no_update_check) {
+        auto update = check_for_update();
+        if (update.has_update) {
+            con_color(CLR_WARN);
+            con_print("  UPDATE  ");
+            con_color(CLR_DEFAULT);
+            con_print("New version available: %s (you have %s)\n",
+                      update.latest_version.c_str(), DEZLOCK_VERSION_STR);
+            con_color(CLR_DIM);
+            con_print("          %s\n", update.release_url.c_str());
+            con_color(CLR_DEFAULT);
+            con_print("\n");
+        }
+    }
 
     // --schema fast path: load JSON and jump straight to live mode
     if (!opts.schema_path.empty()) {
@@ -448,6 +466,18 @@ int main(int argc, char* argv[]) {
     int total_static = data.value("total_static_fields", 0);
 
     auto modules = parse_modules(data);
+
+    // Check for client.dll + server.dll overlap
+    {
+        bool has_client = false, has_server = false;
+        for (const auto& mod : modules) {
+            if (_stricmp(mod.name.c_str(), "client.dll") == 0) has_client = true;
+            if (_stricmp(mod.name.c_str(), "server.dll") == 0) has_server = true;
+        }
+        if (has_client && has_server) {
+            con_info("Both client.dll and server.dll present — client.dll takes priority for shared classes.");
+        }
+    }
 
     if (!create_directory_recursive(opts.output_dir.c_str())) {
         con_fail("Cannot create output directory: %s", opts.output_dir.c_str());
