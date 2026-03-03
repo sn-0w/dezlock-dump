@@ -577,7 +577,7 @@ table.ft {
 }
 .ent-row {
   display: grid;
-  grid-template-columns: 48px 1fr 150px;
+  grid-template-columns: 48px 1fr 110px;
   gap: 0;
   font-size: 0.82rem;
   cursor: pointer;

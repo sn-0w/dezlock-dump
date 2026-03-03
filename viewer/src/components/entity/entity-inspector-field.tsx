@@ -1,6 +1,6 @@
 import { useRef, useLayoutEffect } from 'react'
 import { useSchema } from '../../context/schema-context'
-import { extractType } from '../../lib/format'
+import { resolveFieldType } from '../../lib/format'
 import { ClassLink } from '../shared/class-link'
 import { LiveValueCell } from '../live-renderers/live-value-cell'
 
@@ -49,8 +49,9 @@ export function EntityInspectorField({
     }
   }, [diffFlash, flashTick])
 
-  const typeName = extractType(type)
-  const typeModule = typeName ? resolveClassMod(typeName, module) : null
+  const resolved = resolveFieldType(type, resolveClassMod, module)
+  const typeName = resolved?.typeName ?? null
+  const typeModule = resolved?.typeMod ?? null
   const typeEnumEntry = typeName ? schemaEnumMap.get(typeName) : null
   const rest = typeName ? (type || '').replace(typeName, '').trim() : ''
 

@@ -11,7 +11,7 @@ export const EntityRow = memo(function EntityRow({ entity, selected, style }: En
   return (
     <div className={'ent-row' + (selected ? ' selected' : '')} data-addr={entity.addr} style={style}>
       <div className="ent-row-cell ent-row-idx">{String(entity.index)}</div>
-      <div className="ent-row-cell ent-row-cls">
+      <div className="ent-row-cell ent-row-cls" title={entity.class}>
         {entity.class}
         {entity.designer_name && (
           <span style={{ color: 'var(--t3)', fontSize: '11px' }}>

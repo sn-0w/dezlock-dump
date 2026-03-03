@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Dynamic RTTI-based polymorphic pointer resolution** — when the live bridge dereferences a pointer field (e.g. `m_pSubclassVData` typed as `CEntitySubclassVDataBase*`), it now resolves the actual runtime type via MSVC x64 RTTI. This reveals the full derived class (e.g. `CitadelAbilityVData` with 100+ fields) instead of showing only the declared base type's fields. Affects all polymorphic pointers: VData, base entity pointers, modifier pointers, and any `SomeBase*` that's actually a derived type at runtime
+- **RTTI cache** — vtable-to-class-name mappings are cached globally (thread-safe) and seeded from the existing vtable lookup table during entity list enumeration, so repeated dereferences of the same type are near-instant
+- **Resolved type badge in viewer** — `LivePointer` now shows the RTTI-resolved class name as the primary badge and the declared schema type as a dimmed secondary badge when they differ
 - **Entity inspector: live values in inline drill-down** — expanding a type (e.g. `CBodyComponent*`) in the entity inspector now shows a 5th "Live" column with real-time values from the parent entity subscription; nested struct data is extracted and passed recursively; pointer fields gracefully fall back to dashes
 - **Entity sidebar list** — extracted `EntitySidebarList` component for cleaner entity tab architecture
 - **Entity context** — new `EntityContext` provider to share entity state across components
@@ -17,9 +20,10 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 - **InlineClassExpander** accepts optional `liveValues`, `enumMap`, `classMap`, `selectedEntityAddr` props; conditionally renders a "Live" column when values are provided; class view remains unchanged
-- **EntityInspectorPane** passes live values and schema maps through to `InlineClassExpander` for inline-expand virtual items; `parentFieldName` added to inline-expand VirtualItem type
+- **EntityInspectorPane** passes live values and schema maps through to `InlineClassExpander` for inline-expand virtual items; `parentFieldName` added to inline-expand VirtualItem type; inline expansion now uses RTTI-resolved type from live data when available
 - **EntityInspectorField** gains `flashTick` prop for reliable diff flash restart
 - Entity view refactored — simplified by extracting sidebar and context logic
+- **entity.list RTTI refactored** — inline RTTI walk lambda replaced with reusable `resolve_rtti_cached()` function; vtable lookup table seeds the global cache on first entity list build
 
 ## [1.7.0] - 2026-03-01
 

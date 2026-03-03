@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react'
 import { useSchema } from '../../context/schema-context'
 import { flatFields } from '../../lib/flat-fields'
-import { h, extractType } from '../../lib/format'
+import { h, resolveFieldType } from '../../lib/format'
 import { ClassLink } from './class-link'
 import { CopyFieldButton } from './copy-field-button'
 import { LiveValueCell } from '../live-renderers/live-value-cell'
@@ -19,7 +19,7 @@ interface InlineClassExpanderProps {
   selectedEntityAddr?: string
 }
 
-const MAX_DEPTH = 3
+const MAX_DEPTH = 5
 
 function extractNestedLiveValues(
   liveValues: Record<string, unknown> | undefined,
@@ -29,7 +29,10 @@ function extractNestedLiveValues(
   const val = liveValues[fieldName]
   if (val && typeof val === 'object' && '_t' in (val as Record<string, unknown>)) {
     const sv = val as { _t: string; fields?: Record<string, unknown> }
+    // Embedded structs: { _t: 'struct', fields: {...} }
     if (sv._t === 'struct' && sv.fields) return sv.fields
+    // Dereferenced pointers: { _t: 'ptr', fields: {...} }
+    if (sv._t === 'ptr' && sv.fields) return sv.fields
   }
   return undefined
 }
@@ -116,9 +119,10 @@ export function InlineClassExpander({
               const showGroupHeader = groups.length > 1
               return group.fields.map((f: FlatField, i: number) => {
                 const globalIdx = fields.indexOf(f)
-                const typeName = extractType(f.type)
-                const typeMod = typeName ? resolveClassMod(typeName, preferModule) : null
-                const canExpand = depth < MAX_DEPTH && !!typeName && !!typeMod
+                const resolved = resolveFieldType(f.type, resolveClassMod, preferModule)
+                const typeName = resolved?.typeName ?? null
+                const typeMod = resolved?.typeMod ?? null
+                const canExpand = depth < MAX_DEPTH && !!resolved
                 const isExpanded = expandedRows.has(globalIdx)
                 const fieldCopyPrefix = `${copyPrefix} -> ${h(f.offset)} ${f.name}`
 

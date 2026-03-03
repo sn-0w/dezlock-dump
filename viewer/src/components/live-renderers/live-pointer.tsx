@@ -5,21 +5,38 @@ interface LivePointerProps {
 export function LivePointer({ value }: LivePointerProps) {
   // Rich typed object from server with _t='ptr'
   if (value && typeof value === 'object' && '_t' in value) {
-    const v = value as { _t: string; addr?: string; type?: string; valid?: boolean }
+    const v = value as { _t: string; addr?: string; type?: string; valid?: boolean; class?: string; declared_type?: string }
+
+    // Show RTTI-resolved class name if available, otherwise declared type
+    const displayType = v.class || v.type
+    const showDeclared = v.declared_type && v.declared_type !== displayType
 
     return (
       <>
         <span
-          className={'live-ptr' + (v.valid && v.type ? ' insp-drilldown-toggle' : '')}
+          className={'live-ptr' + (v.valid && displayType ? ' insp-drilldown-toggle' : '')}
           title="Click to drill down"
-          data-drill-addr={v.valid && v.type ? v.addr : undefined}
-          data-drill-type={v.valid && v.type ? v.type : undefined}
+          data-drill-addr={v.valid && displayType ? v.addr : undefined}
+          data-drill-type={v.valid && displayType ? displayType : undefined}
         >
           {v.addr || '0x0'}
         </span>
-        {v.type && (
+        {displayType && (
           <span className="badge" style={{ marginLeft: 4 }}>
-            {v.type}*
+            {displayType}*
+          </span>
+        )}
+        {showDeclared && (
+          <span
+            className="badge"
+            style={{
+              marginLeft: 4,
+              opacity: 0.5,
+              fontSize: '0.85em',
+            }}
+            title={`Declared as ${v.declared_type}*`}
+          >
+            {v.declared_type}*
           </span>
         )}
         {!v.valid && (

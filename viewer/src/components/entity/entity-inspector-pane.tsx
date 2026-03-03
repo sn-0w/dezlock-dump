@@ -3,7 +3,7 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { useSchema } from '../../context/schema-context'
 import { useLive } from '../../context/live-context'
 import { flatFields } from '../../lib/flat-fields'
-import { liveEditorType, extractType } from '../../lib/format'
+import { liveEditorType, resolveFieldType } from '../../lib/format'
 import type { EntityListItem } from '../../types/entity'
 import type { FlatField } from '../../types/schema'
 import type { DiffChanges } from '../../types/live'
@@ -30,7 +30,10 @@ function extractNestedLiveValues(
   const val = liveValues[fieldName]
   if (val && typeof val === 'object' && '_t' in (val as Record<string, unknown>)) {
     const sv = val as { _t: string; fields?: Record<string, unknown> }
+    // Embedded structs: { _t: 'struct', fields: {...} }
     if (sv._t === 'struct' && sv.fields) return sv.fields
+    // Dereferenced pointers: { _t: 'ptr', fields: {...} }
+    if (sv._t === 'ptr' && sv.fields) return sv.fields
   }
   return undefined
 }
@@ -111,17 +114,37 @@ export function EntityInspectorPane({
           const fieldKey = field.name + ':' + field.offset
           items.push({ type: 'field', field, groupName: group.name })
           if (expandedFields.has(fieldKey)) {
-            const typeName = extractType(field.type)
-            const typeMod = typeName ? resolveClassMod(typeName, mod) : null
-            if (typeName && typeMod) {
-              items.push({ type: 'inline-expand', typeName, typeMod, fieldKey, parentFieldName: field.name })
+            const resolved = resolveFieldType(field.type, resolveClassMod, mod)
+            if (resolved) {
+              // Check if live data has a runtime-resolved type (via RTTI)
+              let expandType = resolved.typeName
+              let expandMod = resolved.typeMod
+              const lv = liveValues[field.name]
+              if (lv && typeof lv === 'object' && '_t' in (lv as Record<string, unknown>)) {
+                const pv = lv as { _t: string; class?: string; module?: string }
+                if (pv._t === 'ptr' && pv.class) {
+                  expandType = pv.class
+                  expandMod = pv.module || expandMod
+                }
+              }
+              items.push({ type: 'inline-expand', typeName: expandType, typeMod: expandMod, fieldKey, parentFieldName: field.name })
             }
           }
         }
       }
     }
     return items
-  }, [groups, isFieldVisible, collapsedSections, expandedFields, resolveClassMod, mod])
+  }, [groups, isFieldVisible, collapsedSections, expandedFields, resolveClassMod, mod, liveValues])
+
+  const getItemKey = useCallback(
+    (i: number) => {
+      const item = virtualItems[i]
+      if (item.type === 'section-header') return 'sh-' + item.groupName
+      if (item.type === 'inline-expand') return 'ie-' + item.fieldKey
+      return 'f-' + item.field.name + ':' + item.field.offset
+    },
+    [virtualItems],
+  )
 
   const virtualizer = useVirtualizer({
     count: virtualItems.length,
@@ -132,6 +155,7 @@ export function EntityInspectorPane({
       if (item.type === 'inline-expand') return 250
       return 28
     },
+    getItemKey,
     overscan: 20,
     measureElement: (el) => el.getBoundingClientRect().height,
   })
@@ -284,6 +308,26 @@ export function EntityInspectorPane({
     (e: React.MouseEvent) => {
       const target = e.target as HTMLElement
 
+      // Handle pointer drill-down (click on [data-drill-addr])
+      const drillEl = target.closest('[data-drill-addr]') as HTMLElement
+      if (drillEl) {
+        const fieldRow = drillEl.closest('.insp-field') as HTMLElement
+        if (fieldRow) {
+          const fieldName = fieldRow.dataset.fieldName
+          const fieldType = fieldRow.dataset.fieldType
+          if (fieldName && fieldType) {
+            const matchField = virtualItems.find(
+              (item) => item.type === 'field' && item.field.name === fieldName,
+            )
+            if (matchField && matchField.type === 'field') {
+              const fieldKey = matchField.field.name + ':' + matchField.field.offset
+              toggleFieldExpand(fieldKey)
+            }
+          }
+        }
+        return
+      }
+
       // Handle entity follow (click on .live-handle)
       const handleEl = target.closest('.live-handle') as HTMLElement
       if (handleEl && entityListData && onFollowEntity) {
@@ -298,7 +342,7 @@ export function EntityInspectorPane({
         }
       }
     },
-    [entityListData, onFollowEntity],
+    [entityListData, onFollowEntity, virtualItems, toggleFieldExpand],
   )
 
   // Snapshot handlers
@@ -447,9 +491,8 @@ export function EntityInspectorPane({
 
                   const f = item.field
                   const fieldKey = f.name + ':' + f.offset
-                  const typeName = extractType(f.type)
-                  const typeMod = typeName ? resolveClassMod(typeName, mod) : null
-                  const canExpand = !!typeName && !!typeMod
+                  const resolved = resolveFieldType(f.type, resolveClassMod, mod)
+                  const canExpand = !!resolved
                   const isFieldExpanded = expandedFields.has(fieldKey)
                   return (
                     <div

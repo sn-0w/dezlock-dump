@@ -26,6 +26,46 @@ export function extractType(t: string | null | undefined): string | null {
   return /^[A-Z]/.test(n) && n.length > 1 ? n : null
 }
 
+/** Known container/wrapper type names that should not be treated as expandable classes */
+const CONTAINER_NAMES = new Set([
+  'CUtlVector', 'CNetworkUtlVectorBase', 'CUtlVectorEmbeddedNetworkVar',
+  'C_NetworkUtlVectorBase', 'C_UtlVectorEmbeddedNetworkVar',
+  'CHandle', 'CStrongHandle', 'CWeakHandle',
+  'CUtlStringToken', 'CUtlString', 'CUtlSymbolLarge',
+  'CResourceNameTyped', 'CResourceArray',
+])
+
+/**
+ * Extract ALL candidate class-like identifiers from a type string.
+ * Filters out known container/wrapper names, returning innermost types first.
+ */
+export function extractTypeNames(t: string): string[] {
+  if (!t) return []
+  // Match identifiers starting with uppercase or C_/S_ prefix patterns
+  const matches = t.match(/[A-Z][A-Za-z0-9_]*/g)
+  if (!matches) return []
+  // Reverse so innermost (most specific) come first
+  return [...matches].reverse().filter((n) => n.length > 1 && !CONTAINER_NAMES.has(n))
+}
+
+/**
+ * Resolve the best expandable class type from a field type string.
+ * Tries each candidate from extractTypeNames against resolveClassMod.
+ */
+export function resolveFieldType(
+  type: string | null | undefined,
+  resolveClassMod: (name: string, preferMod?: string) => string | null,
+  preferModule?: string,
+): { typeName: string; typeMod: string } | null {
+  if (!type) return null
+  const candidates = extractTypeNames(type)
+  for (const name of candidates) {
+    const mod = resolveClassMod(name, preferModule)
+    if (mod) return { typeName: name, typeMod: mod }
+  }
+  return null
+}
+
 /** Determine live editor type from field type string */
 export function liveEditorType(
   fieldType: string | null | undefined,

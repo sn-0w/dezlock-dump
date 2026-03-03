@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cctype>
 #include <cstdarg>
+#include <unordered_set>
 
 namespace live {
 
@@ -24,6 +25,9 @@ namespace live {
 // ============================================================================
 
 static LogFn g_logger;
+
+static std::mutex s_rtti_mtx;
+static std::unordered_map<uint64_t, std::string> s_rtti_cache;  // vtable addr -> class name
 
 void set_logger(LogFn fn) { g_logger = std::move(fn); }
 
@@ -441,9 +445,19 @@ std::string SchemaCache::resolve_wrapper(const std::string& name) const {
     // Build cache on first call
     if (!m_wrapper_cache_built) {
         for (const auto& [key, cls] : m_classes) {
+            if (cls.size <= 0) continue;
+            // Quick path: no parent, single direct field
             if (cls.fields.size() == 1 && cls.parent.empty() &&
-                cls.fields[0].size == cls.size && cls.size > 0) {
+                cls.fields[0].size == cls.size) {
                 m_wrapper_cache[cls.name] = cls.fields[0].type;
+                continue;
+            }
+            // Slow path: use flat_fields for inherited wrappers (e.g., GameTime_t)
+            if (!cls.parent.empty()) {
+                auto flat = flat_fields(cls.module, cls.name);
+                if (flat.size() == 1 && flat[0].size == cls.size) {
+                    m_wrapper_cache[cls.name] = flat[0].type;
+                }
             }
         }
         m_wrapper_cache_built = true;
@@ -737,12 +751,107 @@ static nlohmann::json resolve_enum_value(const std::string& enum_type, int64_t r
 }
 
 // ============================================================================
+// RTTI resolution — resolve runtime type from a polymorphic object's vtable
+// ============================================================================
+
+static std::string resolve_rtti_cached(uint64_t obj_addr, PipeClient& pipe) {
+    if (!is_valid_ptr(obj_addr)) return "";
+
+    // Read vtable pointer at obj_addr[0]
+    auto vt_data = pipe.read(obj_addr, 8);
+    if (vt_data.size() != 8) return "";
+    uint64_t vtable = *(const uint64_t*)vt_data.data();
+    if (!is_valid_ptr(vtable)) return "";
+
+    // Fast path: check cache
+    {
+        std::lock_guard<std::mutex> lock(s_rtti_mtx);
+        auto it = s_rtti_cache.find(vtable);
+        if (it != s_rtti_cache.end()) return it->second;
+    }
+
+    // Cache miss: walk RTTI chain
+    // vtable[-1] -> CompleteObjectLocator pointer
+    auto col_data = pipe.read(vtable - 8, 8);
+    if (col_data.size() != 8) {
+        std::lock_guard<std::mutex> lock(s_rtti_mtx);
+        s_rtti_cache[vtable] = "";
+        return "";
+    }
+    uint64_t col_ptr = *(const uint64_t*)col_data.data();
+    if (!is_valid_ptr(col_ptr)) {
+        std::lock_guard<std::mutex> lock(s_rtti_mtx);
+        s_rtti_cache[vtable] = "";
+        return "";
+    }
+
+    // COL+0xC: TypeDescriptor RVA (4 bytes), skip 4, self RVA (4 bytes)
+    auto col_fields = pipe.read(col_ptr + 0x0C, 12);
+    if (col_fields.size() != 12) {
+        std::lock_guard<std::mutex> lock(s_rtti_mtx);
+        s_rtti_cache[vtable] = "";
+        return "";
+    }
+    uint32_t td_rva   = *(const uint32_t*)(col_fields.data() + 0);
+    uint32_t self_rva = *(const uint32_t*)(col_fields.data() + 8);
+    if (td_rva == 0 || self_rva == 0) {
+        std::lock_guard<std::mutex> lock(s_rtti_mtx);
+        s_rtti_cache[vtable] = "";
+        return "";
+    }
+
+    uint64_t owning_base = col_ptr - (uint64_t)self_rva;
+    uint64_t td_addr = owning_base + td_rva;
+
+    // TypeDescriptor+0x10: mangled class name
+    auto name_data = pipe.read(td_addr + 0x10, 128);
+    if (name_data.empty()) {
+        std::lock_guard<std::mutex> lock(s_rtti_mtx);
+        s_rtti_cache[vtable] = "";
+        return "";
+    }
+
+    name_data.push_back(0);
+    size_t len = 0;
+    for (; len < name_data.size() - 1; len++) {
+        uint8_t ch = name_data[len];
+        if (ch == 0 || ch >= 0x80 || (ch < 0x20 && ch != 0)) break;
+    }
+    if (len == 0) {
+        std::lock_guard<std::mutex> lock(s_rtti_mtx);
+        s_rtti_cache[vtable] = "";
+        return "";
+    }
+
+    std::string mangled((const char*)name_data.data(), len);
+    // Demangle: strip ".?AV" or ".?AU" prefix and "@@" suffix
+    if (mangled.size() >= 4 && (mangled.substr(0, 4) == ".?AV" || mangled.substr(0, 4) == ".?AU"))
+        mangled = mangled.substr(4);
+    auto at_pos = mangled.find("@@");
+    if (at_pos != std::string::npos)
+        mangled = mangled.substr(0, at_pos);
+
+    // Cache the result
+    {
+        std::lock_guard<std::mutex> lock(s_rtti_mtx);
+        s_rtti_cache[vtable] = mangled;
+    }
+    return mangled;
+}
+
+// ============================================================================
 // CUtlVector reader
 // ============================================================================
 
+// Forward declaration — process_field provides full template-aware parsing
+static nlohmann::json process_field(const CachedField& f, const uint8_t* data, int data_size,
+                                     PipeClient& pipe, const SchemaCache& cache,
+                                     std::unordered_set<std::string> visited = {});
+
 static nlohmann::json read_utlvector(const uint8_t* field_data, int field_size,
                                       const std::string& elem_type, PipeClient& pipe,
-                                      const SchemaCache& cache) {
+                                      const SchemaCache& cache,
+                                      const std::unordered_set<std::string>& visited = {}) {
     using json = nlohmann::json;
     if (field_size < 16) return json(nullptr);
 
@@ -769,8 +878,18 @@ static nlohmann::json read_utlvector(const uint8_t* field_data, int field_size,
 
     json items = json::array();
     for (int i = 0; i < read_count && (i * elem_size + elem_size) <= (int)elem_data.size(); i++) {
-        std::string eff = resolve_type(elem_type, elem_size, cache);
-        items.push_back(interpret_field(eff, elem_data.data() + i * elem_size, elem_size));
+        if (visited.count(elem_type) == 0 && visited.size() < 16) {
+            CachedField synth;
+            synth.name = "[" + std::to_string(i) + "]";
+            synth.type = elem_type;
+            synth.offset = 0;
+            synth.size = elem_size;
+            items.push_back(process_field(synth, elem_data.data() + i * elem_size,
+                                           elem_size, pipe, cache, visited));
+        } else {
+            std::string eff = resolve_type(elem_type, elem_size, cache);
+            items.push_back(interpret_field(eff, elem_data.data() + i * elem_size, elem_size));
+        }
     }
     result["items"] = std::move(items);
     if (count > 64) result["truncated"] = true;
@@ -782,7 +901,8 @@ static nlohmann::json read_utlvector(const uint8_t* field_data, int field_size,
 // ============================================================================
 
 static nlohmann::json process_field(const CachedField& f, const uint8_t* data, int data_size,
-                                     PipeClient& pipe, const SchemaCache& cache, int depth = 0) {
+                                     PipeClient& pipe, const SchemaCache& cache,
+                                     std::unordered_set<std::string> visited) {
     using json = nlohmann::json;
     if (f.offset + f.size > data_size) return json(nullptr);
 
@@ -816,7 +936,7 @@ static nlohmann::json process_field(const CachedField& f, const uint8_t* data, i
             // CUtlVector / CNetworkUtlVectorBase / CUtlVectorEmbeddedNetworkVar
             if (tmpl_outer == "CUtlVector" || tmpl_outer == "CNetworkUtlVectorBase" ||
                 tmpl_outer == "CUtlVectorEmbeddedNetworkVar") {
-                return read_utlvector(field_data, f.size, tmpl_inner, pipe, cache);
+                return read_utlvector(field_data, f.size, tmpl_inner, pipe, cache, visited);
             }
             // CHandle<T>
             if (tmpl_outer == "CHandle") {
@@ -832,15 +952,59 @@ static nlohmann::json process_field(const CachedField& f, const uint8_t* data, i
         }
     }
 
-    // 3. Pointer fields: "CBaseEntity*"
+    // 3. Pointer fields: "CBaseEntity*" — dereference and read pointed-to struct
+    //    Uses RTTI to resolve the actual runtime type (e.g. CitadelAbilityVData
+    //    instead of CEntitySubclassVDataBase).
     if (!f.type.empty() && f.type.back() == '*' && f.size == 8) {
         uint64_t ptr = *(const uint64_t*)field_data;
         std::string pointed_type = f.type.substr(0, f.type.size() - 1);
         while (!pointed_type.empty() && pointed_type.back() == ' ') pointed_type.pop_back();
         char hex[32];
         snprintf(hex, sizeof(hex), "0x%llX", (unsigned long long)ptr);
-        return json::object({{"_t", "ptr"}, {"addr", std::string(hex)}, {"type", pointed_type},
-                             {"valid", is_valid_ptr(ptr)}});
+        json result = json::object({{"_t", "ptr"}, {"addr", std::string(hex)}, {"type", pointed_type},
+                                     {"valid", is_valid_ptr(ptr)}});
+
+        // Dereference: if valid pointer to a known class, read the struct fields
+        if (is_valid_ptr(ptr) && visited.size() < 16) {
+            // Attempt RTTI resolution for the actual runtime type
+            std::string resolved_type = resolve_rtti_cached(ptr, pipe);
+            std::string use_type = pointed_type;  // fallback to declared type
+
+            if (!resolved_type.empty()) {
+                const CachedClass* resolved_cls = cache.find_class_any(resolved_type);
+                if (resolved_cls && !resolved_cls->fields.empty()) {
+                    use_type = resolved_type;
+                    if (resolved_type != pointed_type) {
+                        result["declared_type"] = pointed_type;
+                    }
+                }
+            }
+
+            if (visited.count(use_type) == 0) {
+                const CachedClass* cls = cache.find_class_any(use_type);
+                if (cls && !cls->fields.empty() && cls->size > 0 && cls->size <= 0x10000) {
+                    auto obj_data = pipe.read(ptr, static_cast<uint32_t>(cls->size));
+                    if (!obj_data.empty()) {
+                        std::vector<CachedField> sub_fields = cache.flat_fields(cls->module, cls->name);
+                        if (sub_fields.empty()) sub_fields = cls->fields;
+
+                        auto child_visited = visited;
+                        child_visited.insert(use_type);
+
+                        json fields = json::object();
+                        for (const auto& sf : sub_fields) {
+                            if (sf.offset + sf.size > (int)obj_data.size()) continue;
+                            fields[sf.name] = process_field(sf, obj_data.data(), (int)obj_data.size(),
+                                                             pipe, cache, child_visited);
+                        }
+                        result["fields"] = std::move(fields);
+                        result["class"] = cls->name;
+                        result["module"] = cls->module;
+                    }
+                }
+            }
+        }
+        return result;
     }
 
     // 4. String types: CUtlString / CUtlSymbolLarge — deref pointer to show string
@@ -880,23 +1044,25 @@ static nlohmann::json process_field(const CachedField& f, const uint8_t* data, i
     }
 
     // 7. Embedded struct — known class with fields, inline expansion
-    if (depth < 3 && f.size > 0) {
+    if (visited.count(f.type) == 0 && visited.size() < 16 && f.size > 0) {
         const CachedClass* embedded = cache.find_class_any(f.type);
-        if (embedded && !embedded->fields.empty()) {
-            // Get flat fields for the embedded class
-            std::vector<CachedField> sub_fields;
-            // Try to get flat fields (with inheritance)
-            sub_fields = cache.flat_fields(embedded->module, embedded->name);
+        if (embedded) {
+            // Get flat fields for the embedded class (with inheritance)
+            std::vector<CachedField> sub_fields = cache.flat_fields(embedded->module, embedded->name);
             if (sub_fields.empty()) sub_fields = embedded->fields;
+            if (!sub_fields.empty()) {
+                auto child_visited = visited;
+                child_visited.insert(f.type);
 
-            json sub = json::object();
-            for (const auto& sf : sub_fields) {
-                int abs_off = f.offset + sf.offset;
-                if (abs_off + sf.size > data_size) continue;
-                sub[sf.name] = process_field(sf, data + f.offset, f.size, pipe, cache, depth + 1);
+                json sub = json::object();
+                for (const auto& sf : sub_fields) {
+                    int abs_off = f.offset + sf.offset;
+                    if (abs_off + sf.size > data_size) continue;
+                    sub[sf.name] = process_field(sf, data + f.offset, f.size, pipe, cache, child_visited);
+                }
+                return json::object({{"_t", "struct"}, {"class", f.type}, {"module", embedded->module},
+                                     {"fields", sub}});
             }
-            return json::object({{"_t", "struct"}, {"class", f.type}, {"module", embedded->module},
-                                 {"fields", sub}});
         }
     }
 
@@ -1663,41 +1829,13 @@ nlohmann::json CommandDispatcher::handle(const std::string& cmd, const nlohmann:
         log_info("ENT", "vtable lookup built: %zu entries from %zu module bases",
                  vtable_lookup.size(), mod_base_cache.size());
 
-        // RTTI chain walk: entity vtable -> vtable[-1] (COL) -> COL+0xC (TD RVA)
-        // -> module_base + TD_RVA + 0x10 (mangled name)
-        auto resolve_rtti = [&](uint64_t vtable) -> std::string {
-            if (!is_valid_ptr(vtable)) return "";
-            auto col_data = m_pipe.read(vtable - 8, 8);
-            if (col_data.size() != 8) return "";
-            uint64_t col_ptr = *(const uint64_t*)col_data.data();
-            if (!is_valid_ptr(col_ptr)) return "";
-
-            auto col_fields = m_pipe.read(col_ptr + 0x0C, 12);
-            if (col_fields.size() != 12) return "";
-            uint32_t td_rva   = *(const uint32_t*)(col_fields.data() + 0);
-            uint32_t self_rva = *(const uint32_t*)(col_fields.data() + 8);
-            if (td_rva == 0 || self_rva == 0) return "";
-
-            uint64_t owning_base = col_ptr - (uint64_t)self_rva;
-            uint64_t td_addr = owning_base + td_rva;
-            auto name_data = m_pipe.read(td_addr + 0x10, 128);
-            if (name_data.empty()) return "";
-
-            name_data.push_back(0);
-            size_t len = 0;
-            for (; len < name_data.size() - 1; len++) {
-                uint8_t ch = name_data[len];
-                if (ch == 0 || ch >= 0x80 || (ch < 0x20 && ch != 0)) break;
+        // Seed the global RTTI cache with known vtable->class mappings
+        {
+            std::lock_guard<std::mutex> lock(s_rtti_mtx);
+            for (const auto& [vt_addr, cls_name] : vtable_lookup) {
+                s_rtti_cache[vt_addr] = cls_name;
             }
-            if (len == 0) return "";
-            std::string mangled((const char*)name_data.data(), len);
-            if (mangled.size() >= 4 && (mangled.substr(0, 4) == ".?AV" || mangled.substr(0, 4) == ".?AU"))
-                mangled = mangled.substr(4);
-            auto at_pos = mangled.find("@@");
-            if (at_pos != std::string::npos)
-                mangled = mangled.substr(0, at_pos);
-            return mangled;
-        };
+        }
 
         json entities = json::array();
         log_info("ENT", "enumerating %d chunks...", max_chunks);
@@ -1722,21 +1860,8 @@ nlohmann::json CommandDispatcher::handle(const std::string& cmd, const nlohmann:
 
                     int index = ci * CHUNK_SIZE + batch_start + slot;
 
-                    auto vt_data = m_pipe.read(ent_ptr, 8);
-                    std::string class_name = "Unknown";
-                    if (vt_data.size() == 8) {
-                        uint64_t vtable = *(const uint64_t*)vt_data.data();
-                        auto it = vtable_lookup.find(vtable);
-                        if (it != vtable_lookup.end()) {
-                            class_name = it->second;
-                        } else {
-                            std::string rtti_name = resolve_rtti(vtable);
-                            if (!rtti_name.empty()) {
-                                class_name = rtti_name;
-                                vtable_lookup[vtable] = rtti_name;
-                            }
-                        }
-                    }
+                    std::string class_name = resolve_rtti_cached(ent_ptr, m_pipe);
+                    if (class_name.empty()) class_name = "Unknown";
 
                     std::string designer_name;
                     uint64_t name_sym = 0;
