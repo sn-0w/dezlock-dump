@@ -606,6 +606,34 @@ inline void* find_declared_class(void* type_scope, const char* class_name) {
     return result;
 }
 
+// ---- Safe memory readers ----
+
+inline bool safe_read_classinfo(uintptr_t ci, int16_t* field_count, uintptr_t* fields_ptr) {
+    __try {
+        *field_count = *reinterpret_cast<int16_t*>(ci + 0x1C);
+        *fields_ptr = *reinterpret_cast<uintptr_t*>(ci + 0x28);
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        *field_count = 0;
+        *fields_ptr = 0;
+        return false;
+    }
+}
+
+inline bool safe_read_field(uintptr_t entry, const char** name, int32_t* offset) {
+    __try {
+        *name = *reinterpret_cast<const char**>(entry + 0x00);
+        *offset = *reinterpret_cast<int32_t*>(entry + 0x10);
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        *name = nullptr;
+        *offset = 0;
+        return false;
+    }
+}
+
 // ---- Offset resolution with caching ----
 
 inline int32_t resolve_offset(const char* module_name, const char* class_name, const char* field_name) {
@@ -649,23 +677,22 @@ inline int32_t resolve_offset(const char* module_name, const char* class_name, c
     int16_t field_count = 0;
     uintptr_t fields_ptr = 0;
 
-    __try {
-        field_count = *reinterpret_cast<int16_t*>(ci + 0x1C);
-        fields_ptr = *reinterpret_cast<uintptr_t*>(ci + 0x28);
-    } __except(EXCEPTION_EXECUTE_HANDLER) { return -1; }
-
+    if (!safe_read_classinfo(ci, &field_count, &fields_ptr))
+        return -1;
     if (!fields_ptr || field_count <= 0) return -1;
 
     // Walk all fields and cache them (avoids repeated walks for the same class)
     for (int i = 0; i < field_count; i++) {
         uintptr_t entry = fields_ptr + i * 0x20;
-        __try {
-            const char* fname = *reinterpret_cast<const char**>(entry + 0x00);
-            int32_t foffset = *reinterpret_cast<int32_t*>(entry + 0x10);
-            if (fname) {
-                cls.fields[fname] = foffset;
-            }
-        } __except(EXCEPTION_EXECUTE_HANDLER) { continue; }
+
+        const char* fname;
+        int32_t foffset;
+
+        if (!safe_read_field(entry, &fname, &foffset))
+            continue;
+
+        if (fname)
+            cls.fields[fname] = foffset;
     }
 
     // Return the requested field
